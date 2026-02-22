@@ -54,7 +54,7 @@ If you prefer to do it manually, follow these steps:
 
 ```bash
 brew install ttyd tmux
-pip3 install fastapi uvicorn
+pip3 install fastapi uvicorn python-multipart
 ```
 
 ### 2. Set up Tailscale

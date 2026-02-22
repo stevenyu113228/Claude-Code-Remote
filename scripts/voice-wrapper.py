@@ -6,10 +6,14 @@ field at the bottom. Dictation works in the native input, then text is
 injected into the tmux session via `tmux send-keys`.
 """
 
+import os
+import re
 import subprocess
 import shutil
 
-from fastapi import FastAPI
+from pathlib import Path
+
+from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import uvicorn
@@ -98,7 +102,7 @@ async def index():
             background: #2d2d2d;
             border-top: 1px solid #444;
         }}
-        .input-bar input {{
+        .input-bar textarea {{
             flex: 1;
             padding: 10px 12px;
             font-size: 16px;
@@ -107,8 +111,14 @@ async def index():
             background: #1a1a1a;
             color: #fff;
             outline: none;
+            resize: none;
+            overflow-y: hidden;
+            min-height: 42px;
+            max-height: 100px;
+            line-height: 1.4;
+            font-family: -apple-system, system-ui, sans-serif;
         }}
-        .input-bar input:focus {{
+        .input-bar textarea:focus {{
             border-color: #007aff;
         }}
         .input-bar button {{
@@ -185,13 +195,16 @@ async def index():
             <button onclick="newSession()">New</button>
             <button onclick="resumeSession()">Resume</button>
             <button onclick="copyPane()">Copy</button>
+            <button id="photoBtn" onclick="document.getElementById('photoInput').click()">&#128247;</button>
+            <input type="file" id="photoInput" accept="image/*" multiple style="display:none"
+                   onchange="uploadPhoto(this)">
         </div>
         <div class="input-bar">
-            <input type="text" id="cmd"
-                   placeholder="Dictate or type here..."
-                   autocomplete="off"
-                   autocorrect="on"
-                   enterkeyhint="send" />
+            <textarea id="cmd" rows="1"
+                      placeholder="Dictate or type here..."
+                      autocomplete="off"
+                      autocorrect="on"
+                      enterkeyhint="send"></textarea>
             <button onclick="sendText()">Send</button>
         </div>
     </div>
@@ -202,17 +215,32 @@ async def index():
     </div>
     <script>
         const input = document.getElementById('cmd');
+        const UPLOAD_DIR = '/tmp/claude-uploads/';
 
+        // Auto-resize textarea as content grows
+        input.addEventListener('input', () => {{
+            input.style.height = 'auto';
+            input.style.height = Math.min(input.scrollHeight, 100) + 'px';
+        }});
+
+        // Enter sends, Shift+Enter adds newline
         input.addEventListener('keydown', (e) => {{
-            if (e.key === 'Enter') {{
+            if (e.key === 'Enter' && !e.shiftKey) {{
                 e.preventDefault();
                 sendText();
             }}
         }});
 
         async function sendText(override) {{
-            const text = override || input.value.trim();
+            let text = override || input.value.trim();
             if (!text) return;
+            // Swap [filename] placeholders to real paths
+            text = text.replace(/\[([^\]]+)\]/g, (match, name) => {{
+                if (name.match(/\.(jpg|jpeg|png|gif|webp|heic)$/i)) {{
+                    return UPLOAD_DIR + name;
+                }}
+                return match;
+            }});
 
             try {{
                 await fetch('/send', {{
@@ -222,6 +250,7 @@ async def index():
                 }});
                 if (!override) {{
                     input.value = '';
+                    input.style.height = 'auto';
                     input.focus();
                 }}
             }} catch (err) {{
@@ -273,6 +302,89 @@ async def index():
             input.focus();
         }}
 
+        function compressImage(file, maxWidth, quality) {{
+            return new Promise((resolve) => {{
+                // Skip compression for non-image files
+                if (!file.type.startsWith('image/')) {{
+                    resolve(file);
+                    return;
+                }}
+                const img = new Image();
+                img.onload = () => {{
+                    URL.revokeObjectURL(img.src);
+                    let w = img.width, h = img.height;
+                    if (w > maxWidth) {{
+                        h = Math.round(h * maxWidth / w);
+                        w = maxWidth;
+                    }}
+                    const canvas = document.createElement('canvas');
+                    canvas.width = w;
+                    canvas.height = h;
+                    canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+                    canvas.toBlob((blob) => {{
+                        const name = file.name.replace(/\\.[^.]+$/, '.jpg');
+                        resolve(new File([blob], name, {{ type: 'image/jpeg' }}));
+                    }}, 'image/jpeg', quality);
+                }};
+                img.src = URL.createObjectURL(file);
+            }});
+        }}
+
+        async function uploadPhoto(fileInput) {{
+            const files = Array.from(fileInput.files);
+            if (!files.length) return;
+            const btn = document.getElementById('photoBtn');
+            const origText = btn.textContent;
+            const origPlaceholder = input.placeholder;
+
+            // Show counter on button + status in textarea placeholder
+            const total = files.length;
+            let done = 0;
+            btn.textContent = '0/' + total;
+            btn.disabled = true;
+            input.placeholder = 'Compressing ' + total + ' photo' + (total > 1 ? 's' : '') + '...';
+
+            try {{
+                // Compress all photos first (resize to 1568px, 85% JPEG quality)
+                const compressed = await Promise.all(files.map(f => compressImage(f, 1568, 0.85)));
+                input.placeholder = 'Uploading ' + total + ' photo' + (total > 1 ? 's' : '') + '...';
+
+                // Upload all photos in parallel, updating counter as each finishes
+                const uploads = compressed.map(file => {{
+                    const form = new FormData();
+                    form.append('file', file);
+                    return fetch('/upload', {{ method: 'POST', body: form }})
+                        .then(r => r.json())
+                        .then(data => {{
+                            done++;
+                            btn.textContent = done + '/' + total;
+                            input.placeholder = 'Uploaded ' + done + '/' + total + '...';
+                            return data;
+                        }});
+                }});
+                const results = await Promise.all(uploads);
+
+                // Show friendly names in textarea
+                const tags = results.filter(r => r.name).map(r => '[' + r.name + ']');
+                if (tags.length) {{
+                    const prefix = input.value.trim();
+                    input.value = (prefix ? prefix + '\\n' : '') + tags.join('\\n') + '\\n';
+                    input.style.height = 'auto';
+                    input.style.height = Math.min(input.scrollHeight, 100) + 'px';
+                    input.focus();
+                }}
+            }} catch (err) {{
+                console.error('Upload failed:', err);
+                input.placeholder = 'Upload failed. Try again.';
+                setTimeout(() => {{ input.placeholder = origPlaceholder; }}, 3000);
+            }} finally {{
+                btn.textContent = origText;
+                btn.disabled = false;
+                input.placeholder = origPlaceholder;
+                fileInput.value = '';
+            }}
+        }}
+
         // Auto-reconnect: reload iframe when tab becomes visible again
         const terminal = document.querySelector('.terminal-frame');
         document.addEventListener('visibilitychange', () => {{
@@ -301,9 +413,18 @@ async def send_text(payload: TextInput):
     return {"status": "sent"}
 
 
+ALLOWED_KEYS = {
+    "Up", "Down", "Left", "Right", "Tab", "Escape", "Enter",
+    "C-c", "C-l", "C-d", "C-z", "C-a", "C-e", "C-k", "C-u",
+    "BSpace", "DC", "Home", "End", "PPage", "NPage",
+}
+
+
 @app.post("/key")
 async def send_key(payload: KeyInput):
     """Send a special key (Escape, C-c, Enter, etc.) to tmux."""
+    if payload.key not in ALLOWED_KEYS:
+        return {"status": "rejected", "error": "key not allowed"}
     subprocess.run(
         [TMUX, "send-keys", "-t", TMUX_SESSION, payload.key],
         timeout=5,
@@ -319,6 +440,40 @@ async def copy_pane():
         capture_output=True, text=True, timeout=5,
     )
     return {"text": result.stdout}
+
+
+UPLOAD_DIR = Path("/tmp/claude-uploads")
+MAX_UPLOAD_SIZE = 20 * 1024 * 1024  # 20 MB
+
+
+@app.post("/upload")
+async def upload_file(file: UploadFile = File(...)):
+    """Save an uploaded file using its original name and return the path."""
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    # Sanitize filename: strip path components and special characters
+    raw_name = file.filename or "photo.jpg"
+    name = Path(raw_name).name
+    name = re.sub(r'[^\w.\-]', '_', name)
+    if not name or name.startswith('.'):
+        name = "photo.jpg"
+    dest = UPLOAD_DIR / name
+    # Handle duplicate filenames with a counter suffix
+    counter = 2
+    while dest.exists():
+        stem = Path(name).stem
+        ext = Path(name).suffix
+        dest = UPLOAD_DIR / f"{stem}-{counter}{ext}"
+        counter += 1
+    # Stream-read with size limit to avoid memory exhaustion
+    chunks = []
+    total = 0
+    while chunk := await file.read(1024 * 1024):
+        total += len(chunk)
+        if total > MAX_UPLOAD_SIZE:
+            return {"error": "File too large (max 20MB)"}
+        chunks.append(chunk)
+    dest.write_bytes(b"".join(chunks))
+    return {"name": dest.name, "path": str(dest)}
 
 
 if __name__ == "__main__":
