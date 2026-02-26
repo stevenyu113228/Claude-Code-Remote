@@ -7,6 +7,7 @@ injected into the tmux session via `tmux send-keys`.
 """
 
 import os
+import platform
 import re
 import subprocess
 import shutil
@@ -18,11 +19,25 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import uvicorn
 
-TMUX = shutil.which("tmux") or "/opt/homebrew/bin/tmux"
-TAILSCALE = shutil.which("tailscale") or "/usr/local/bin/tailscale"
+def _find_binary(name: str, macos_fallback: str, linux_fallback: str) -> str:
+    """Locate a binary by name, falling back to an OS-specific path."""
+    found = shutil.which(name)
+    if found:
+        return found
+    if platform.system() == "Darwin":
+        return macos_fallback
+    return linux_fallback
+
+
+TMUX = _find_binary("tmux", "/opt/homebrew/bin/tmux", "/usr/bin/tmux")
+TAILSCALE = _find_binary(
+    "tailscale",
+    "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+    "/usr/bin/tailscale",
+)
 TTYD_PORT = 7681
 WRAPPER_PORT = 8080
-TMUX_SESSION = "claude"
+TMUX_SESSION = os.environ.get("TMUX_SESSION", "claude")
 
 
 app = FastAPI()

@@ -1,0 +1,28 @@
+# systemd user service for Claude Code Remote CLI
+# Linux equivalent of remote-cli.plist (macOS launchd)
+#
+# Setup:
+#   1. Replace YOUR_USERNAME with your Linux username
+#   2. Copy scripts to ~/.local/bin/remote-cli/
+#   3. Copy this file to ~/.config/systemd/user/remote-cli.service
+#   4. systemctl --user daemon-reload
+#   5. systemctl --user enable --now remote-cli
+
+[Unit]
+Description=Claude Code Remote CLI
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/home/YOUR_USERNAME/.local/bin/remote-cli/start-remote-cli.sh
+ExecStop=/home/YOUR_USERNAME/.local/bin/remote-cli/stop-remote-cli.sh
+Restart=always
+RestartSec=10
+
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:/home/YOUR_USERNAME/.local/bin
+StandardOutput=append:/home/YOUR_USERNAME/.local/bin/remote-cli/logs/systemd-stdout.log
+StandardError=append:/home/YOUR_USERNAME/.local/bin/remote-cli/logs/systemd-stderr.log
+
+[Install]
+WantedBy=default.target

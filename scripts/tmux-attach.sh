@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Clear Claude Code env vars so a fresh session can launch inside tmux
 unset CLAUDECODE
 unset CLAUDE_CODE_ENTRYPOINT
@@ -9,6 +9,15 @@ unset CLAUDE_CODE_ENV_VERSION
 export LANG="en_US.UTF-8"
 export LC_ALL="en_US.UTF-8"
 
-# Apple Silicon: /opt/homebrew/bin/tmux | Intel Mac: /usr/local/bin/tmux
-TMUX_BIN=$(which tmux 2>/dev/null || echo "/opt/homebrew/bin/tmux")
-exec "$TMUX_BIN" new-session -A -s claude -c "$HOME"
+# Session name from env var or default to "claude"
+SESSION="${TMUX_SESSION:-claude}"
+
+# Detect tmux binary: command -v first, then OS-specific fallback
+if TMUX_BIN=$(command -v tmux 2>/dev/null); then
+    : # found
+elif [ "$(uname -s)" = "Darwin" ]; then
+    TMUX_BIN="/opt/homebrew/bin/tmux"
+else
+    TMUX_BIN="/usr/bin/tmux"
+fi
+exec "$TMUX_BIN" new-session -A -s "$SESSION" -c "$HOME"
