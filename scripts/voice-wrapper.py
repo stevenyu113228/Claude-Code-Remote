@@ -524,6 +524,76 @@ async def copy_pane():
     return {"text": result.stdout}
 
 
+## ── tmux window management ─────────────────────────────────────────────
+
+@app.get("/tmux/windows")
+async def list_windows():
+    """List all tmux windows in the session."""
+    result = subprocess.run(
+        [TMUX, "list-windows", "-t", TMUX_SESSION,
+         "-F", "#{window_index}|#{window_name}|#{window_active}|#{pane_current_command}"],
+        capture_output=True, text=True, timeout=5,
+    )
+    windows = []
+    for line in result.stdout.strip().split("\n"):
+        if not line:
+            continue
+        parts = line.split("|")
+        if len(parts) < 4:
+            continue
+        idx, name, active, cmd = parts[0], parts[1], parts[2], parts[3]
+        windows.append({
+            "index": int(idx), "name": name,
+            "active": active == "1", "command": cmd,
+        })
+    return {"windows": windows}
+
+
+@app.post("/tmux/window/select")
+async def select_window(payload: dict):
+    """Switch to the specified tmux window."""
+    idx = payload["index"]
+    subprocess.run(
+        [TMUX, "select-window", "-t", f"{TMUX_SESSION}:{idx}"],
+        timeout=5,
+    )
+    return {"status": "switched", "index": idx}
+
+
+@app.post("/tmux/window/new")
+async def new_window(payload: dict = {}):
+    """Create a new tmux window, optionally running a command."""
+    cmd = [TMUX, "new-window", "-t", TMUX_SESSION]
+    if payload.get("command"):
+        cmd.extend(["-n", "shell", payload["command"]])
+    subprocess.run(cmd, timeout=5)
+    return {"status": "created"}
+
+
+@app.post("/tmux/window/close")
+async def close_window(payload: dict):
+    """Close the specified tmux window."""
+    idx = payload["index"]
+    subprocess.run(
+        [TMUX, "kill-window", "-t", f"{TMUX_SESSION}:{idx}"],
+        timeout=5,
+    )
+    return {"status": "closed", "index": idx}
+
+
+@app.post("/tmux/exec")
+async def exec_command(payload: dict):
+    """Send a shell command to a specific tmux window."""
+    target = payload.get("window", "")
+    command = payload["command"]
+    t = f"{TMUX_SESSION}:{target}" if target else TMUX_SESSION
+    subprocess.run([TMUX, "send-keys", "-t", t, "-l", command], timeout=5)
+    subprocess.run([TMUX, "send-keys", "-t", t, "Enter"], timeout=5)
+    return {"status": "sent"}
+
+
+## ── file upload ────────────────────────────────────────────────────────
+
 UPLOAD_DIR = Path("/tmp/claude-uploads")
 MAX_UPLOAD_SIZE = 20 * 1024 * 1024  # 20 MB
 

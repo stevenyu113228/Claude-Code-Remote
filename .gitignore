@@ -3,3 +3,8 @@ logs/
 .DS_Store
 __pycache__/
 threads-posts.md
+
+# Xcode / iOS
+**/DerivedData/
+*.xcuserstate
+**/xcuserdata/
