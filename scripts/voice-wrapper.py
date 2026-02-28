@@ -89,11 +89,10 @@ async def index():
         }}
         .quick-keys {{
             display: flex;
+            flex-wrap: wrap;
             gap: 4px;
             padding: 4px 6px;
             background: #252525;
-            overflow-x: auto;
-            -webkit-overflow-scrolling: touch;
         }}
         .quick-keys button {{
             padding: 8px 14px;
@@ -194,6 +193,25 @@ async def index():
             color: #fff;
             cursor: pointer;
         }}
+        .scroll-nav {{
+            display: flex;
+            gap: 8px;
+            padding: 6px 0;
+        }}
+        .scroll-nav button {{
+            flex: 1;
+            padding: 10px;
+            font-size: 14px;
+            font-weight: 600;
+            border: none;
+            border-radius: 8px;
+            background: #444;
+            color: #fff;
+            cursor: pointer;
+        }}
+        .scroll-nav button:active {{
+            background: #666;
+        }}
     </style>
 </head>
 <body>
@@ -207,9 +225,12 @@ async def index():
             <button onclick="sendKey('C-c')">Ctrl+C</button>
             <button onclick="sendKey('Enter')">Enter</button>
             <button onclick="sendKey('C-l')">Clear</button>
+            <button onclick="sendKey('C-o')">Ctrl+O</button>
             <button onclick="newSession()">New</button>
             <button onclick="resumeSession()">Resume</button>
             <button onclick="copyPane()">Copy</button>
+            <button onclick="scrollView()">Scroll</button>
+            <button onclick="location.reload()">Refresh</button>
             <button id="photoBtn" onclick="document.getElementById('photoInput').click()">&#128247;</button>
             <input type="file" id="photoInput" accept="image/*" multiple style="display:none"
                    onchange="uploadPhoto(this)">
@@ -224,8 +245,12 @@ async def index():
         </div>
     </div>
     <div class="copy-overlay" id="copyOverlay">
-        <div class="copy-hint">Long-press to select, then Copy</div>
+        <div class="copy-hint" id="copyHint">Long-press to select, then Copy</div>
         <textarea id="copyText" readonly></textarea>
+        <div class="scroll-nav" id="scrollNav" style="display:none">
+            <button onclick="scrollToTop()">&#9650; Top</button>
+            <button onclick="scrollToBottom()">Bottom &#9660;</button>
+        </div>
         <button class="close-btn" onclick="closeCopy()">Close</button>
     </div>
     <script>
@@ -285,19 +310,60 @@ async def index():
             }}
         }}
 
+        let scrollInterval = null;
+
         async function copyPane() {{
             try {{
                 const resp = await fetch('/copy');
                 const data = await resp.json();
                 const overlay = document.getElementById('copyOverlay');
                 const textarea = document.getElementById('copyText');
+                document.getElementById('copyHint').textContent = 'Long-press to select, then Copy';
+                document.getElementById('scrollNav').style.display = 'none';
                 textarea.value = data.text;
                 overlay.classList.add('active');
-                // Scroll to bottom so most recent output is visible
                 textarea.scrollTop = textarea.scrollHeight;
             }} catch (err) {{
                 console.error('Copy failed:', err);
             }}
+        }}
+
+        async function scrollView() {{
+            try {{
+                const resp = await fetch('/copy');
+                const data = await resp.json();
+                const overlay = document.getElementById('copyOverlay');
+                const textarea = document.getElementById('copyText');
+                document.getElementById('copyHint').textContent = 'Live terminal scrollback (auto-refreshes)';
+                document.getElementById('scrollNav').style.display = 'flex';
+                textarea.value = data.text;
+                overlay.classList.add('active');
+                textarea.scrollTop = textarea.scrollHeight;
+
+                // Auto-refresh every 3 seconds
+                if (scrollInterval) clearInterval(scrollInterval);
+                scrollInterval = setInterval(async () => {{
+                    try {{
+                        const r = await fetch('/copy');
+                        const d = await r.json();
+                        const ta = document.getElementById('copyText');
+                        const atBottom = (ta.scrollHeight - ta.scrollTop - ta.clientHeight) < 40;
+                        ta.value = d.text;
+                        if (atBottom) ta.scrollTop = ta.scrollHeight;
+                    }} catch (e) {{}}
+                }}, 3000);
+            }} catch (err) {{
+                console.error('Scroll view failed:', err);
+            }}
+        }}
+
+        function scrollToTop() {{
+            document.getElementById('copyText').scrollTop = 0;
+        }}
+
+        function scrollToBottom() {{
+            const ta = document.getElementById('copyText');
+            ta.scrollTop = ta.scrollHeight;
         }}
 
         async function newSession() {{
@@ -313,6 +379,7 @@ async def index():
         }}
 
         function closeCopy() {{
+            if (scrollInterval) {{ clearInterval(scrollInterval); scrollInterval = null; }}
             document.getElementById('copyOverlay').classList.remove('active');
             input.focus();
         }}
@@ -430,7 +497,7 @@ async def send_text(payload: TextInput):
 
 ALLOWED_KEYS = {
     "Up", "Down", "Left", "Right", "Tab", "Escape", "Enter",
-    "C-c", "C-l", "C-d", "C-z", "C-a", "C-e", "C-k", "C-u",
+    "C-c", "C-l", "C-d", "C-z", "C-a", "C-e", "C-k", "C-u", "C-o",
     "BSpace", "DC", "Home", "End", "PPage", "NPage",
 }
 
