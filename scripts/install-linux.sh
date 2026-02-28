@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# install-linux.sh — Install all prerequisites for Claude Code Remote on Debian/Ubuntu
+# install-linux.sh — Install all prerequisites for Claude Code Remote on Linux
 
 if [[ "$(uname -s)" != "Linux" ]]; then
     echo "Error: This script is for Linux only. Detected: $(uname -s)"
@@ -12,9 +12,31 @@ echo "=== Claude Code Remote — Linux Installer ==="
 echo
 
 # Install system packages
-echo "Installing system packages (ttyd, tmux, curl)..."
+echo "Installing system packages (tmux, curl)..."
 sudo apt-get update
-sudo apt-get install -y ttyd tmux curl
+sudo apt-get install -y tmux curl
+echo
+
+# Install ttyd from GitHub releases (not available in many distros' apt repos)
+if command -v ttyd &>/dev/null; then
+    echo "ttyd is already installed: $(ttyd --version 2>/dev/null || echo 'unknown version')"
+else
+    echo "Installing ttyd from GitHub releases..."
+    ARCH=$(uname -m)
+    case "$ARCH" in
+        x86_64)  TTYD_ARCH="x86_64" ;;
+        aarch64) TTYD_ARCH="aarch64" ;;
+        armv7l)  TTYD_ARCH="armhf" ;;
+        *)
+            echo "Error: Unsupported architecture: $ARCH"
+            echo "Install ttyd manually: https://github.com/tsl0922/ttyd/releases"
+            exit 1
+            ;;
+    esac
+    sudo curl -fSL -o /usr/local/bin/ttyd "https://github.com/tsl0922/ttyd/releases/latest/download/ttyd.${TTYD_ARCH}"
+    sudo chmod +x /usr/local/bin/ttyd
+    echo "ttyd installed to /usr/local/bin/ttyd"
+fi
 echo
 
 # Install Python packages
