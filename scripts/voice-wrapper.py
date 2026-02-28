@@ -11,10 +11,12 @@ import platform
 import re
 import subprocess
 import shutil
+import time
+import uuid
 
 from pathlib import Path
 
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, Request, UploadFile, File
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import uvicorn
@@ -41,6 +43,9 @@ TMUX_SESSION = os.environ.get("TMUX_SESSION", "claude")
 
 
 app = FastAPI()
+
+# ── session claim state (last device wins) ──────────────────────────────
+active_session = {"id": None, "device": None, "claimed_at": 0}
 
 
 def get_tailscale_ip():
@@ -253,6 +258,12 @@ async def index():
         </div>
         <button class="close-btn" onclick="closeCopy()">Close</button>
     </div>
+    <div id="kickedOverlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.92); z-index:200; flex-direction:column; align-items:center; justify-content:center; font-family:-apple-system,system-ui,sans-serif; color:#fff;">
+        <div style="font-size:48px; margin-bottom:16px;">&#128274;</div>
+        <div style="font-size:20px; font-weight:600; margin-bottom:8px;">Session Taken Over</div>
+        <div id="kickedDevice" style="font-size:14px; color:#aaa; margin-bottom:24px;"></div>
+        <button onclick="reclaim()" style="padding:14px 32px; font-size:16px; font-weight:600; border:none; border-radius:10px; background:#007aff; color:#fff; cursor:pointer;">Reconnect</button>
+    </div>
     <script>
         // Suppress "Leave site?" prompt when switching tabs
         window.addEventListener('beforeunload', (e) => {{
@@ -261,6 +272,75 @@ async def index():
 
         const input = document.getElementById('cmd');
         const UPLOAD_DIR = '/tmp/claude-uploads/';
+
+        // ── session claim (last device wins) ──────────────────────────
+        let mySessionId = null;
+        let sessionCheckInterval = null;
+
+        async function claimSession() {{
+            try {{
+                const resp = await fetch('/session/claim', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ device: 'browser-' + navigator.userAgent.slice(0, 30) }})
+                }});
+                const data = await resp.json();
+                mySessionId = data.session_id;
+                // Hide kicked overlay if showing
+                document.getElementById('kickedOverlay').style.display = 'none';
+            }} catch (e) {{
+                console.warn('Session claim failed (server may not support it):', e);
+            }}
+        }}
+
+        async function checkSession() {{
+            if (!mySessionId) return;
+            try {{
+                const resp = await fetch('/session/check/' + mySessionId);
+                const data = await resp.json();
+                if (!data.active) {{
+                    showKicked(data.current_device);
+                }}
+            }} catch (e) {{
+                // Network error — don't kick, just skip this check
+            }}
+        }}
+
+        function showKicked(device) {{
+            // Stop polling
+            if (sessionCheckInterval) {{ clearInterval(sessionCheckInterval); sessionCheckInterval = null; }}
+            mySessionId = null;
+            // Remove ttyd iframe entirely (kills WebSocket without triggering navigation prompt)
+            const frame = document.querySelector('.terminal-frame');
+            if (frame) frame.remove();
+            // Show overlay
+            const overlay = document.getElementById('kickedOverlay');
+            document.getElementById('kickedDevice').textContent = device ? 'Connected from: ' + device : '';
+            overlay.style.display = 'flex';
+        }}
+
+        function reclaim() {{
+            claimSession().then(() => {{
+                // Recreate terminal iframe
+                const container = document.querySelector('.container');
+                const newFrame = document.createElement('iframe');
+                newFrame.className = 'terminal-frame';
+                newFrame.src = 'http://{ip}:{TTYD_PORT}';
+                container.insertBefore(newFrame, container.firstChild);
+                // Hide kicked overlay
+                document.getElementById('kickedOverlay').style.display = 'none';
+                // Restart polling
+                startSessionPolling();
+            }});
+        }}
+
+        function startSessionPolling() {{
+            if (sessionCheckInterval) clearInterval(sessionCheckInterval);
+            sessionCheckInterval = setInterval(checkSession, 3000);
+        }}
+
+        // Claim on page load
+        claimSession().then(() => startSessionPolling());
 
         // Auto-resize textarea as content grows
         input.addEventListener('input', () => {{
@@ -472,11 +552,16 @@ async def index():
             }}
         }}
 
-        // Auto-reconnect: reload iframe when tab becomes visible again
+        // Auto-reconnect: re-claim session and reload iframe when tab becomes visible
         const terminal = document.querySelector('.terminal-frame');
         document.addEventListener('visibilitychange', () => {{
             if (document.visibilityState === 'visible') {{
-                terminal.src = terminal.src;
+                const overlay = document.getElementById('kickedOverlay');
+                if (overlay.style.display === 'flex') return;  // kicked — don't auto-reconnect
+                claimSession().then(() => {{
+                    terminal.src = terminal.src;
+                    startSessionPolling();
+                }});
             }}
         }});
 
@@ -484,6 +569,31 @@ async def index():
     </script>
 </body>
 </html>"""
+
+
+## ── session claim (last device wins) ───────────────────────────────────
+
+@app.post("/session/claim")
+async def claim_session(request: Request):
+    """Claim the active session. Kicks any previous device."""
+    body = await request.json()
+    session_id = str(uuid.uuid4())
+    active_session["id"] = session_id
+    active_session["device"] = body.get("device", "unknown")
+    active_session["claimed_at"] = time.time()
+    return {"session_id": session_id}
+
+
+@app.get("/session/check/{session_id}")
+async def check_session(session_id: str):
+    """Check if the given session is still the active one."""
+    if active_session["id"] is None:
+        # Server just restarted — don't kick anyone
+        return {"active": True, "current_device": None}
+    return {
+        "active": active_session["id"] == session_id,
+        "current_device": active_session["device"],
+    }
 
 
 @app.post("/send")
