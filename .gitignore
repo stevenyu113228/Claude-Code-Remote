@@ -6,5 +6,6 @@ threads-posts.md
 
 # Xcode / iOS
 **/DerivedData/
+**/.build/
 *.xcuserstate
 **/xcuserdata/
